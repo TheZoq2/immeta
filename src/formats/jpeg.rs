@@ -210,7 +210,7 @@ fn container_type_from_identifier(identifier: Vec<u8>) -> Result<ContainerType>
 
     match identifier_as_string.as_str() {
         "JFIF" => Ok(ContainerType::JFIF),
-        "EXIF" => Ok(ContainerType::EXIF),
+        "Exif" => Ok(ContainerType::EXIF),
         _ => Err(invalid_format!("JPEG file is neighter JFIF nor EXIF"))
     }
 }
