@@ -5,7 +5,7 @@ use std::fmt;
 
 use byteorder::{ReadBytesExt, BigEndian};
 
-use types::{Result, Dimensions};
+use types::{Result, Dimensions, Error};
 use traits::LoadableMetadata;
 use utils::BufReadExt;
 
@@ -19,6 +19,7 @@ pub enum CodingProcess {
     /// Lossless coding.
     Lossless
 }
+
 
 impl fmt::Display for CodingProcess {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -105,60 +106,118 @@ fn find_marker<R: ?Sized, F>(r: &mut R, name: &str, mut matcher: F) -> Result<u8
     }
 }
 
+
 impl LoadableMetadata for Metadata {
     fn load<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
         // read SOI marker, it must be present in all JPEG files
         try!(find_marker(r, "SOI", |m| m == 0xd8));
 
-        // XXX: do we need to check for APP0 JFIF marker? This doesn't seem strictly necessary
-        // XXX: to me, and it seems that other interchange formats are also possible.
+        // Read the APP0 marker to determine wether or not the file is stored
+        // as a JFIF file or as a EXIF file. Some cameras store files as EXIF
+        try!(find_marker(r, "APP0", is_app0_marker));
 
-        // read SOF marker, it must also be present in all JPEG files
-        let marker = try!(find_marker(r, "SOF", is_sof_marker));
-
-        // read and check SOF marker length
-        let size = try_if_eof!(r.read_u16::<BigEndian>(), "when reading SOF marker payload size");
-        if size <= 8 {  // 2 bytes for the length itself, 6 bytes is the minimum header size
-            return Err(invalid_format!("invalid JPEG frame header size: {}", size));
+        let length = try_if_eof!(r.read_u16::<BigEndian>(), "when reading APP0 marker size");
+        if length <= 8 {
+            return Err(invalid_format!("invalid JPG APP0 header length: {}", length))
         }
 
-        // read sample precision
-        let sample_precision = try_if_eof!(r.read_u8(), "when reading sample precision of the frame");
+        //Read the 4 bytes that should be the format identifier
+        //The specifications say 5 bytes but one of them is a null terminator
+        //which we don't care about
+        const IDENTIFIER_SIZE: usize = 4;
+        let mut id_buffer: [u8; IDENTIFIER_SIZE] = [0; IDENTIFIER_SIZE];
+        try!(r.read_exact(&mut id_buffer));
+        //Convert the slice into a vector
+        let id_as_vec: Vec<u8>= id_buffer.iter().map(|x| *x).collect();
 
-        // read height and width
-        let h = try_if_eof!(r.read_u16::<BigEndian>(), "when reading JPEG frame height");
-        let w = try_if_eof!(r.read_u16::<BigEndian>(), "when reading JPEG frame width");
-        // TODO: handle h == 0 (we need to read a DNL marker after the first scan)
+        match try!(container_type_from_identifier(id_as_vec)) {
+            ContainerType::JFIF => load_jfif(r),
+            ContainerType::EXIF => unimplemented!()
+        }
 
-        // there is only one baseline DCT marker, naturally
-        let baseline = marker == 0xc0;
-
-        let differential = match marker {
-            0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xca | 0xcb => false,
-            0xc5 | 0xc6 | 0xc7 | 0xcd | 0xce | 0xcf => true,
-            _ => unreachable!(),  // because we are inside a valid SOF marker
-        };
-
-        // unwrap can't fail, we're inside a valid SOF marker
-        let coding_process = CodingProcess::from_marker(marker).unwrap();
-        let entropy_coding = EntropyCoding::from_marker(marker).unwrap();
-
-        Ok(Metadata {
-            dimensions: (w, h).into(),
-            sample_precision: sample_precision,
-            coding_process: coding_process,
-            entropy_coding: entropy_coding,
-            baseline: baseline,
-            differential: differential,
-        })
     }
+
+}
+
+fn load_jfif<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
+    // read SOF marker, it must also be present in all JPEG files
+    let marker = try!(find_marker(r, "SOF", is_sof_marker));
+
+    // read and check SOF marker length
+    let size = try_if_eof!(r.read_u16::<BigEndian>(), "when reading SOF marker payload size");
+    if size <= 8 {  // 2 bytes for the length itself, 6 bytes is the minimum header size
+        return Err(invalid_format!("invalid JPEG frame header size: {}", size));
+    }
+
+    //The marker for dimension can either be SOF0 or SOF2 depending on if the
+    //image is a baseline or progressive DCT-based jpeg. If the marker
+    //is c0 then it is baseline, c2 is progressive
+
+    // read sample precision
+    let sample_precision = try_if_eof!(r.read_u8(), "when reading sample precision of the frame");
+
+    // read height and width
+    let h = try_if_eof!(r.read_u16::<BigEndian>(), "when reading JPEG frame height");
+    let w = try_if_eof!(r.read_u16::<BigEndian>(), "when reading JPEG frame width");
+    // TODO: handle h == 0 (we need to read a DNL marker after the first scan)
+
+    // there is only one baseline DCT marker, naturally
+    let baseline = marker == 0xc0;
+
+    let differential = match marker {
+        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc9 | 0xca | 0xcb => false,
+        0xc5 | 0xc6 | 0xc7 | 0xcd | 0xce | 0xcf => true,
+        _ => unreachable!(),  // because we are inside a valid SOF marker
+    };
+
+    // unwrap can't fail, we're inside a valid SOF marker
+    let coding_process = CodingProcess::from_marker(marker).unwrap();
+    let entropy_coding = EntropyCoding::from_marker(marker).unwrap();
+
+    Ok(Metadata {
+        dimensions: (w, h).into(),
+        sample_precision: sample_precision,
+        coding_process: coding_process,
+        entropy_coding: entropy_coding,
+        baseline: baseline,
+        differential: differential,
+    })
 }
 
 fn is_sof_marker(value: u8) -> bool {
     match value {
         // no 0xC4, 0xC8 and 0xCC, they are not SOF markers
-        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc5 | 0xc6 | 0xc7 | 0xc9 |
-        0xca | 0xcb | 0xcd | 0xce | 0xcf => true,
+        0xc0 | 0xc2 => true,
         _ => false
     }
 }
+
+fn is_app0_marker(value: u8) -> bool
+{
+    match value {
+        0xe0 => true,
+        _ => false
+    }
+}
+
+
+fn container_type_from_identifier(identifier: Vec<u8>) -> Result<ContainerType>
+{
+    let identifier_as_string = match String::from_utf8(identifier) {
+        Ok(val) => val,
+        Err(e) => return Err(invalid_format!("JPEG file does not contain a valid identifier"))
+    };
+
+    match identifier_as_string.as_str() {
+        "JFIF" => Ok(ContainerType::JFIF),
+        "EXIF" => Ok(ContainerType::EXIF),
+        _ => Err(invalid_format!("JPEG file is neighter JFIF nor EXIF"))
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum ContainerType {
+    JFIF,
+    EXIF
+}
+

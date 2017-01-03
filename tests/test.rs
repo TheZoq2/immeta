@@ -19,6 +19,11 @@ const CHERRY_DIM: Dimensions = Dimensions {
     height: 772
 };
 
+const NIKON_DIM: Dimensions = Dimensions{
+    width: 6000,
+    height: 4000
+};
+
 #[test]
 fn test_jpeg() {
     let md = immeta::load_from_file("tests/images/owlet.jpg").unwrap();
@@ -34,6 +39,15 @@ fn test_jpeg() {
     assert_eq!(md.entropy_coding, jpeg::EntropyCoding::Huffman);
     assert!(md.baseline);
     assert!(!md.differential);
+}
+
+#[test]
+fn test_nikon_jpeg()
+{
+    let md = immeta::load_from_file("tests/images/DSC_0001.JPG").unwrap();
+
+    assert_eq!(md.mime_type(), "image/jpeg");
+    assert_eq!(md.dimensions(), NIKON_DIM);
 }
 
 #[test]
