@@ -112,27 +112,25 @@ impl LoadableMetadata for Metadata {
         // read SOI marker, it must be present in all JPEG files
         try!(find_marker(r, "SOI", |m| m == 0xd8));
 
-        // Read the APP0 marker to determine wether or not the file is stored
+        // Read the APP marker to determine wether or not the file is stored
         // as a JFIF file or as a EXIF file. Some cameras store files as EXIF
-        try!(find_marker(r, "APP0", is_app0_marker));
+        // while others store it as JFIF.
+        let app_marker = try!(find_marker(r, "APP", is_app_marker));
 
-        let length = try_if_eof!(r.read_u16::<BigEndian>(), "when reading APP0 marker size");
+        let length = try_if_eof!(r.read_u16::<BigEndian>(), "when reading APP marker size");
         if length <= 8 {
-            return Err(invalid_format!("invalid JPG APP0 header length: {}", length))
+            return Err(invalid_format!("invalid JPG APP header length: {}", length))
         }
 
-        //Read the 4 bytes that should be the format identifier
-        //The specifications say 5 bytes but one of them is a null terminator
-        //which we don't care about
-        const IDENTIFIER_SIZE: usize = 4;
-        let mut id_buffer: [u8; IDENTIFIER_SIZE] = [0; IDENTIFIER_SIZE];
-        try!(r.read_exact(&mut id_buffer));
-        //Convert the slice into a vector
-        let id_as_vec: Vec<u8>= id_buffer.iter().map(|x| *x).collect();
-
-        match try!(container_type_from_identifier(id_as_vec)) {
+        // Checking if the file is EXIF or JFIF.
+        // XXX: I believe checking if the file has a APP0 or APP1 marker should
+        // XXX: be enough but that could be wrong if there are more exotic JPEGS
+        // XXX: out there. If you encounter a file that is parsed wrong, try to
+        // XXX: determine the JPEG container that is used
+        match try!(container_type_from_app_marker(app_marker)) {
             ContainerType::JFIF => load_jfif(r),
-            ContainerType::EXIF => unimplemented!()
+            //ContainerType::EXIF => Err(invalid_format!("EXIF file format is not supported"))
+            ContainerType::EXIF => load_exif(r)
         }
 
     }
@@ -183,34 +181,50 @@ fn load_jfif<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
         differential: differential,
     })
 }
+fn load_exif<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
+    // The first 6 bytes should be the string "EXIF" followed by two null bytes.
+    // If this is not the case, we don't have an EXIF file
+    const EXIF_IDENTIFIER_LENGTH: usize= 6;
+    let mut buffer = [0; EXIF_IDENTIFIER_LENGTH];
+    try!(r.read_exact(&mut buffer));
+    if buffer != [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]
+    {
+        return Err(invalid_format!("JPEG file with APP1 marker is not EXIF"));
+    }
+
+    //Reading the byte allign of the exif content. Some EIXF files use big
+    //endian while some use little endian files
+    unimplemented!()
+}
+
+fn load_exif_with_endianness<R: ?Sized + BufRead, E: >
 
 fn is_sof_marker(value: u8) -> bool {
     match value {
         // no 0xC4, 0xC8 and 0xCC, they are not SOF markers
-        0xc0 | 0xc2 => true,
+        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc5 | 0xc6 | 0xc7 | 0xc9 |
+        0xca | 0xcb | 0xcd | 0xce | 0xcf => true,
         _ => false
     }
 }
 
-fn is_app0_marker(value: u8) -> bool
+fn is_app_marker(value: u8) -> bool
 {
     match value {
-        0xe0 => true,
+        0xe0 | 0xe1 => true,
         _ => false
     }
 }
 
 
-fn container_type_from_identifier(identifier: Vec<u8>) -> Result<ContainerType>
+/**
+  Determines wether or not this is an EXIF file based on the APPn marker
+*/
+fn container_type_from_app_marker(marker: u8) -> Result<ContainerType>
 {
-    let identifier_as_string = match String::from_utf8(identifier) {
-        Ok(val) => val,
-        Err(e) => return Err(invalid_format!("JPEG file does not contain a valid identifier"))
-    };
-
-    match identifier_as_string.as_str() {
-        "JFIF" => Ok(ContainerType::JFIF),
-        "Exif" => Ok(ContainerType::EXIF),
+    match marker {
+        0xe0 => Ok(ContainerType::JFIF),
+        0xe1 => Ok(ContainerType::EXIF),
         _ => Err(invalid_format!("JPEG file is neighter JFIF nor EXIF"))
     }
 }

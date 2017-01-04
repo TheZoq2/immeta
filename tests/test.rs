@@ -42,12 +42,30 @@ fn test_jpeg() {
 }
 
 #[test]
-fn test_nikon_jpeg()
+fn test_exif_jpeg()
 {
     let md = immeta::load_from_file("tests/images/DSC_0001.JPG").unwrap();
 
     assert_eq!(md.mime_type(), "image/jpeg");
     assert_eq!(md.dimensions(), NIKON_DIM);
+}
+
+//TODO: Remove this
+//For testing the same as test_nikon_jpeg but retaining error messages
+//from internal modules
+use std::io::{BufReader, BufRead, Seek, Cursor};
+use std::fs::File;
+use std::path::Path;
+use immeta::LoadableMetadata;
+
+#[test]
+fn read_exif_jpeg_with_error()
+{
+    let mut f = BufReader::new(File::open(Path::new("tests/images/DSC_0001.JPG")).unwrap());
+
+    let md = immeta::formats::jpeg::Metadata::load(&mut f).unwrap();
+
+    assert_eq!(md.dimensions, NIKON_DIM);
 }
 
 #[test]
