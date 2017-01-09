@@ -3,7 +3,7 @@
 use std::io::BufRead;
 use std::fmt;
 
-use byteorder::{ReadBytesExt, BigEndian};
+use byteorder::{ReadBytesExt, BigEndian, LittleEndian, ByteOrder};
 
 use types::{Result, Dimensions, Error};
 use traits::LoadableMetadata;
@@ -184,20 +184,36 @@ fn load_jfif<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
 fn load_exif<R: ?Sized + BufRead>(r: &mut R) -> Result<Metadata> {
     // The first 6 bytes should be the string "EXIF" followed by two null bytes.
     // If this is not the case, we don't have an EXIF file
-    const EXIF_IDENTIFIER_LENGTH: usize= 6;
-    let mut buffer = [0; EXIF_IDENTIFIER_LENGTH];
-    try!(r.read_exact(&mut buffer));
-    if buffer != [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]
     {
-        return Err(invalid_format!("JPEG file with APP1 marker is not EXIF"));
+        const EXIF_IDENTIFIER_LENGTH: usize= 6;
+        let mut buffer = [0; EXIF_IDENTIFIER_LENGTH];
+        try!(r.read_exact(&mut buffer));
+        if buffer != [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]
+        {
+            return Err(invalid_format!("JPEG file with APP1 marker is not EXIF"));
+        }
     }
 
     //Reading the byte allign of the exif content. Some EIXF files use big
     //endian while some use little endian files
-    unimplemented!()
+    let byte_order_mark = try!(r.read_u16::<BigEndian>());
+    match byte_order_mark
+    {
+        //"II" = Little endian
+        0x4949 => load_exif_with_byteorder::<_, LittleEndian>(r),
+        //"MM" = Big endian
+        0x4d4d => load_exif_with_byteorder::<_, BigEndian>(r),
+        //Unrecognised byte order
+        _ => Err(invalid_format!("Unrecognised byte order mark in JPEG file"))
+    }
+
 }
 
-fn load_exif_with_endianness<R: ?Sized + BufRead, E: >
+fn load_exif_with_byteorder<R, Order>(r: &mut R) -> Result<Metadata>
+    where R: ?Sized + BufRead, Order: ByteOrder
+{
+    unimplemented!();
+}
 
 fn is_sof_marker(value: u8) -> bool {
     match value {
